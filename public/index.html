@@ -464,8 +464,11 @@
     <div class="card">
       <h2>Dati</h2>
       <p class="helper">Tutti i dati sono salvati automaticamente nel tuo account (privati, non condivisi).</p>
-      <button class="btn secondary" id="btn-export">Esporta dati (CSV)</button>
-      <p class="helper" style="margin-top:8px">Scarica 4 file CSV (Movimenti, Situazione persone, Conto Famiglia CC, Conto Famiglia Contanti) apribili con Excel, Numbers, Google Sheets o LibreOffice. Tutto avviene offline, nel browser.</p>
+      <div class="row">
+        <button class="btn secondary" id="btn-export-csv">Esporta CSV (Unico file)</button>
+        <button class="btn secondary" id="btn-export-xlsx">Esporta Excel (Multi-foglio)</button>
+      </div>
+      <p class="helper" style="margin-top:8px">Il CSV unisce tutto in un unico file di testo; l'Excel crea un file con schede separate.</p>
       <button class="btn danger" id="btn-reset">Cancella tutti i movimenti</button>
     </div>
   </section>
@@ -664,8 +667,6 @@ function attachAddFormListenersOnce(){
     document.getElementById('f-splittype').value = 'quota4';
     renderSplitEditor();
   });
-  // Spesa personale di Sbarby: pagatore e conto sono SUOI, non del Conto Famiglia CC.
-  // Split 100% su Sbarby -> non genera debito/credito verso gli altri (owed = paidPersonal per lui).
   document.getElementById('btn-pannelli').addEventListener('click', ()=>{
     document.getElementById('m-type').value = 'expense'; onTypeChange();
     document.getElementById('f-category').value = 'Casa';
@@ -1612,7 +1613,7 @@ document.getElementById('btn-reset').addEventListener('click', async ()=>{
   }
 });
 
-// ---------- EXPORT CSV ----------
+// ---------- EXPORT CSV & XLSX (UNICO FILE) ----------
 function csvEscape(v){
   const s = (v===undefined||v===null) ? '' : String(v);
   return /[;"\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
@@ -1620,52 +1621,108 @@ function csvEscape(v){
 function toCSV(rows){
   return rows.map(r=>r.map(csvEscape).join(';')).join('\r\n');
 }
-function downloadCSV(filename, content){
-  const blob = new Blob(['\uFEFF'+content], {type:'text/csv;charset=utf-8;'});
+function downloadExportFile(filename, content, mimeType) {
+  const blob = new Blob(['\uFEFF'+content], {type: mimeType});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
-function exportData(){
+
+function exportCSVAllInOne(){
   const payerMap = Object.fromEntries(payerAccountOptions().map(a=>[a.id,a.label]));
   const destMap = Object.fromEntries(incomeDestAccounts().map(a=>[a.id,a.label]));
+  const rows = [];
 
-  const movRows = [['Data','Tipo','Categoria','Descrizione','Importo','Persona che ha pagato/Conto usato','Conto interessato','Persona (versato da)','Suddivisione']];
+  rows.push(['--- MOVIMENTI ---']);
+  rows.push(['Data','Tipo','Categoria','Descrizione','Importo','Pagato da / Destinazione','Versato da','Suddivisione']);
   movements.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(m=>{
     if(m.type==='expense'){
       const split = Object.entries(m.splitValues||{}).filter(([k,v])=>v>0).map(([k,v])=>{
         const p = people.find(pp=>pp.id===k); return (p?p.name:k)+' '+v+'%';
       }).join(', ');
-      movRows.push([m.date,'Spesa',m.category,m.desc||'',m.amount.toFixed(2),payerMap[m.paidBy]||m.paidBy,payerMap[m.paidBy]||m.paidBy,'',split]);
+      rows.push([m.date,'Spesa',m.category,m.desc||'',m.amount.toFixed(2),payerMap[m.paidBy]||m.paidBy,'',split]);
     } else {
-      const personName = m.person ? (people.find(p=>p.id===m.person)?.name || m.person) : '';
-      movRows.push([m.date,'Entrata',m.category,m.desc||'',m.amount.toFixed(2),'',destMap[m.destAccount]||m.destAccount,personName,'']);
+      rows.push([m.date,'Entrata',m.category,m.desc||'',m.amount.toFixed(2),destMap[m.destAccount]||m.destAccount,m.person||'','']);
     }
   });
 
+  rows.push([''],['--- SITUAZIONE PERSONE ---']);
   const r = computeSettlementFull(movements, pregressiSignedMap(), true);
-  const perRows = [['Persona','Debito/Credito pregresso','Quota di competenza','Totale pagato personalmente','Debito teorico','Totale conguagli versati (saldano il debito)','Totale anticipati versati','Totale rata mensile versata','Totale "Altro" (non conteggiato)','Saldo finale','Stato']];
+  rows.push(['Persona','Debito Pregresso','Quota','Pagato','Debito Teorico','Conguagli','Anticipati','Rata Mensile','Saldo Finale','Stato']);
   people.forEach(p=>{
     const n = r.saldoFinale[p.id];
-    const stato = Math.abs(n)<0.01 ? 'In pari' : (n>0 ? 'Debitore' : 'Creditore');
-    perRows.push([p.name, (r.pregressi[p.id]||0).toFixed(2), r.owed[p.id].toFixed(2), r.paidPersonal[p.id].toFixed(2), r.debitoTeorico[p.id].toFixed(2), (r.conguagliVersati[p.id]||0).toFixed(2), (r.anticipatiVersati[p.id]||0).toFixed(2), (r.rataMensileVersata[p.id]||0).toFixed(2), (r.altroEntrate[p.id]||0).toFixed(2), n.toFixed(2), stato]);
+    rows.push([p.name, (r.pregressi[p.id]||0).toFixed(2), r.owed[p.id].toFixed(2), r.paidPersonal[p.id].toFixed(2), r.debitoTeorico[p.id].toFixed(2), (r.conguagliVersati[p.id]||0).toFixed(2), (r.anticipatiVersati[p.id]||0).toFixed(2), (r.rataMensileVersata[p.id]||0).toFixed(2), n.toFixed(2), Math.abs(n)<0.01 ? 'In pari' : (n>0 ? 'Debitore' : 'Creditore')]);
   });
 
-  function accountCSV(acc){
-    const rows = [['Saldo iniziale',acc.initial.toFixed(2)],['Entrate',acc.entrate.toFixed(2)],['Uscite',acc.uscite.toFixed(2)],['Saldo attuale',acc.saldo.toFixed(2)],[],['Data','Tipo','Categoria','Descrizione','Importo','Saldo progressivo']];
-    acc.rows.forEach(m=>rows.push([m.date, m.type==='income'?'Entrata':'Spesa', m.category, m.desc||'', m.amount.toFixed(2), m.saldoProgressivo.toFixed(2)]));
-    return toCSV(rows);
+  rows.push([''],['--- CONTO FAMIGLIA CC ---']);
+  const accCC = computeAccount('famiglia');
+  rows.push(['Data','Tipo','Categoria','Descrizione','Importo','Saldo Progressivo']);
+  accCC.rows.forEach(m=>rows.push([m.date, m.type==='income'?'Entrata':'Spesa', m.category, m.desc||'', m.amount.toFixed(2), m.saldoProgressivo.toFixed(2)]));
+
+  rows.push([''],['--- CONTO FAMIGLIA CONTANTI ---']);
+  const accCash = computeAccount('contanti_casa');
+  rows.push(['Data','Tipo','Categoria','Descrizione','Importo','Saldo Progressivo']);
+  accCash.rows.forEach(m=>rows.push([m.date, m.type==='income'?'Entrata':'Spesa', m.category, m.desc||'', m.amount.toFixed(2), m.saldoProgressivo.toFixed(2)]));
+
+  downloadExportFile('conti_di_casa_completo.csv', toCSV(rows), 'text/csv;charset=utf-8;');
+  showToast('Scaricato 1 unico file CSV');
+}
+
+function exportXLSXMultiSheet(){
+  const payerMap = Object.fromEntries(payerAccountOptions().map(a=>[a.id,a.label]));
+  const destMap = Object.fromEntries(incomeDestAccounts().map(a=>[a.id,a.label]));
+  const r = computeSettlementFull(movements, pregressiSignedMap(), true);
+  const accCC = computeAccount('famiglia');
+  const accCash = computeAccount('contanti_casa');
+
+  let xml = '<?xml version="1.0" encoding="UTF-8"?><?mso-application progid="Excel.Sheet"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">';
+  
+  function xmlCells(arr) {
+    return arr.map(v => `<Cell><Data ss:Type="${typeof v === 'number' ? 'Number' : 'String'}">${String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')}</Data></Cell>`).join('');
   }
 
-  downloadCSV('conti_di_casa_movimenti.csv', toCSV(movRows));
-  setTimeout(()=>downloadCSV('conti_di_casa_situazione_persone.csv', toCSV(perRows)), 300);
-  setTimeout(()=>downloadCSV('conti_di_casa_conto_famiglia_cc.csv', accountCSV(computeAccount('famiglia'))), 600);
-  setTimeout(()=>downloadCSV('conti_di_casa_conto_famiglia_contanti.csv', accountCSV(computeAccount('contanti_casa'))), 900);
-  showToast('Esportazione avviata: 4 file CSV');
+  xml += '<Worksheet ss:Name="Movimenti"><Table>';
+  xml += `<Row>${xmlCells(['Data','Tipo','Categoria','Descrizione','Importo','Pagato da / Destinazione','Versato da','Suddivisione'])}</Row>`;
+  movements.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(m => {
+    let extra = m.type==='expense' ? (payerMap[m.paidBy]||m.paidBy) : (destMap[m.destAccount]||m.destAccount);
+    let split = m.type==='expense' ? Object.entries(m.splitValues||{}).filter(([k,v])=>v>0).map(([k,v])=> {
+      const p = people.find(pp=>pp.id===k); return (p?p.name:k)+' '+v+'%';
+    }).join(', ') : '';
+    xml += `<Row>${xmlCells([m.date, m.type, m.category, m.desc||'', m.amount, extra, m.person||'', split])}</Row>`;
+  });
+  xml += '</Table></Worksheet>';
+
+  xml += '<Worksheet ss:Name="Situazione Persone"><Table>';
+  xml += `<Row>${xmlCells(['Persona','Debito Pregresso','Quota','Pagato','Debito Teorico','Conguagli','Anticipati','Rata Mensile','Saldo Finale','Stato'])}</Row>`;
+  people.forEach(p => {
+    const n = r.saldoFinale[p.id];
+    xml += `<Row>${xmlCells([p.name, r.pregressi[p.id]||0, r.owed[p.id], r.paidPersonal[p.id], r.debitoTeorico[p.id], r.conguagliVersati[p.id]||0, r.anticipatiVersati[p.id]||0, r.rataMensileVersata[p.id]||0, n, Math.abs(n)<0.01 ? 'In pari' : (n>0 ? 'Debitore' : 'Creditore')])}</Row>`;
+  });
+  xml += '</Table></Worksheet>';
+
+  xml += '<Worksheet ss:Name="Conto Famiglia CC"><Table>';
+  xml += `<Row>${xmlCells(['Data','Tipo','Categoria','Descrizione','Importo','Saldo Progressivo'])}</Row>`;
+  accCC.rows.forEach(m => {
+    xml += `<Row>${xmlCells([m.date, m.type, m.category, m.desc||'', m.amount, m.saldoProgressivo])}</Row>`;
+  });
+  xml += '</Table></Worksheet>';
+
+  xml += '<Worksheet ss:Name="Conto Contanti"><Table>';
+  xml += `<Row>${xmlCells(['Data','Tipo','Categoria','Descrizione','Importo','Saldo Progressivo'])}</Row>`;
+  accCash.rows.forEach(m => {
+    xml += `<Row>${xmlCells([m.date, m.type, m.category, m.desc||'', m.amount, m.saldoProgressivo])}</Row>`;
+  });
+  xml += '</Table></Worksheet>';
+
+  xml += '</Workbook>';
+  downloadExportFile('conti_di_casa_completo.xls', xml, 'application/vnd.ms-excel');
+  showToast('Scaricato file Excel multi-foglio');
 }
-document.getElementById('btn-export').addEventListener('click', exportData);
+
+document.getElementById('btn-export-csv').addEventListener('click', exportCSVAllInOne);
+document.getElementById('btn-export-xlsx').addEventListener('click', exportXLSXMultiSheet);
 
 // ---------- INIT ----------
 (async function init(){
