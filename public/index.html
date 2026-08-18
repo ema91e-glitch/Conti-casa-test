@@ -514,7 +514,7 @@ function showToast(msg){
   setTimeout(()=>t.classList.remove('show'), 1800);
 }
 
-// ---------- STORAGE CON NETLIFY FUNCTIONS (CHIAVI CORRETTE: expenses e settings) ----------
+// ---------- STORAGE CON NETLIFY FUNCTIONS ----------
 async function loadAll(){
   try{
     const resSettings = await fetch('/.netlify/functions/api?key=settings');
@@ -845,6 +845,326 @@ function cancelEdit(){
   document.getElementById('btn-cancel-edit').style.display = 'none';
   initAddForm();
 }
+
+// Render functions for list, settle, overall, accounts, settings
+function renderList(){
+  const label = document.getElementById('list-month-label');
+  label.textContent = monthLabel(listMonth);
+  
+  const typeF = document.getElementById('list-type-filter');
+  typeF.innerHTML = `<option value="all">Tutti i tipi</option><option value="expense">Spese</option><option value="income">Entrate</option>`;
+  typeF.value = listTypeFilter;
+  typeF.onchange = e => { listTypeFilter = e.target.value; renderList(); };
+
+  const catF = document.getElementById('list-category-filter');
+  const allCats = ['all', ...CATEGORIES_EXPENSE, ...CATEGORIES_INCOME];
+  catF.innerHTML = allCats.map(c => `<option value="${c}">${c==='all'?'Tutte le categorie':c}</option>`).join('');
+  catF.value = listCategoryFilter;
+  catF.onchange = e => { listCategoryFilter = e.target.value; renderList(); };
+
+  const mKey = monthKey(listMonth);
+  const filtered = movements.filter(m => {
+    if(!m.date || m.date.slice(0,7) !== mKey) return false;
+    if(listTypeFilter !== 'all' && m.type !== listTypeFilter) return false;
+    if(listCategoryFilter !== 'all' && m.category !== listCategoryFilter) return false;
+    return true;
+  }).sort((a,b)=>b.date.localeCompare(a.date));
+
+  const wrap = document.getElementById('list-table-wrap');
+  if(filtered.length === 0){
+    wrap.innerHTML = `<div class="empty">Nessun movimento trovato per questo mese.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = `<div class="table-scroll"><table>
+    <thead>
+      <tr>
+        <th>Data</th>
+        <th>Tipo</th>
+        <th>Categoria</th>
+        <th>Descrizione</th>
+        <th class="num">Importo</th>
+        <th>Azioni</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${filtered.map(m=>{
+        const pill = m.type==='expense' ? '<span class="pill pill-expense">Spesa</span>' : '<span class="pill pill-income">Entrata</span>';
+        return `<tr>
+          <td>${m.date}</td>
+          <td>${pill}</td>
+          <td><b>${m.category}</b></td>
+          <td>${m.desc || '—'}</td>
+          <td class="num"><b>${fmtEUR(m.amount)}</b></td>
+          <td>
+            <button class="btn small secondary" onclick="editMovement('${m.id}')">Modifica</button>
+            <button class="btn small danger" onclick="deleteMovement('${m.id}')">Elimina</button>
+          </td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table></div>`;
+}
+
+function editMovement(id){
+  const m = movements.find(x=>x.id===id);
+  if(!m) return;
+  editingId = m.id;
+  activateTab('add');
+  document.getElementById('m-type').value = m.type || 'expense';
+  onTypeChange();
+  if(m.type==='income'){
+    document.getElementById('i-date').value = m.date;
+    document.getElementById('i-category').value = m.category;
+    document.getElementById('i-amount').value = m.amount;
+    document.getElementById('i-desc').value = m.desc || '';
+    document.getElementById('i-destaccount').value = m.destAccount || 'famiglia';
+    document.getElementById('i-person').value = m.person || '';
+    onIncomeCategoryChange();
+  } else {
+    document.getElementById('f-date').value = m.date;
+    document.getElementById('f-category').value = m.category;
+    document.getElementById('f-amount').value = m.amount;
+    document.getElementById('f-desc').value = m.desc || '';
+    document.getElementById('f-paidby').value = m.paidby || 'famiglia';
+    document.getElementById('f-splittype').value = m.splitType || 'quota3';
+    renderSplitEditor();
+    if(m.split){
+      setTimeout(()=>{
+        for(let pId in m.split){
+          const el = document.getElementById('split-custom-'+pId) || document.getElementById('split-q4-'+pId);
+          if(el) el.value = m.split[pId];
+        }
+        updateSplitSum();
+      }, 50);
+    }
+  }
+  document.getElementById('btn-save-movement').textContent = 'Aggiorna';
+  document.getElementById('btn-cancel-edit').style.display = 'inline-block';
+}
+
+async function deleteMovement(id){
+  if(!confirm('Vuoi eliminare questo movimento?')) return;
+  movements = movements.filter(m=>m.id!==id);
+  await saveMovements();
+  showToast('Movimento eliminato');
+  renderList();
+}
+
+function renderSettle(){
+  document.getElementById('settle-month-label').textContent = monthLabel(settleMonth);
+  const mKey = monthKey(settleMonth);
+  const monthMovs = movements.filter(m=>m.date && m.date.slice(0,7)===mKey);
+
+  let totalExpenses = 0;
+  let totalIncome = 0;
+  monthMovs.forEach(m=>{
+    if(m.type==='expense') totalExpenses += m.amount;
+    if(m.type==='income') totalIncome += m.amount;
+  });
+
+  document.getElementById('settle-stats').innerHTML = `
+    <div class="stat"><div class="label">Spese mese</div><div class="value">${fmtEUR(totalExpenses)}</div></div>
+    <div class="stat"><div class="label">Entrate mese</div><div class="value">${fmtEUR(totalIncome)}</div></div>
+  `;
+
+  // Calcolo base mensile per persona
+  let balances = {};
+  people.forEach(p=> balances[p.id] = {paid:0, owed:0, anticipati:0, rata:0, conguaglio:0});
+
+  monthMovs.forEach(m=>{
+    if(m.type==='expense'){
+      // Chi ha pagato
+      let payerPerson = null;
+      if(m.paidby==='famiglia' || m.paidby==='contanti_casa') payerPerson = null;
+      else if(m.paidby==='esterno') payerPerson = 'p4';
+      else {
+        payerPerson = m.paidby.replace('_cash','');
+      }
+      if(payerPerson && balances[payerPerson]) {
+        balances[payerPerson].paid += m.amount;
+      }
+
+      // Quota dovuta
+      const split = m.split || {p1:36, p2:36, p3:28, p4:0};
+      people.forEach(p=>{
+        const pct = split[p.id] || 0;
+        const share = m.amount * (pct / 100);
+        if(balances[p.id]) balances[p.id].owed += share;
+      });
+    } else if(m.type==='income'){
+      if(m.person && balances[m.person]){
+        if(m.category==='Anticipati') balances[m.person].anticipati += m.amount;
+        if(m.category==='Rata mensile') balances[m.person].rata += m.amount;
+        if(m.category==='Conguaglio') balances[m.person].conguaglio += m.amount;
+      }
+    }
+  });
+
+  let rowsHtml = '';
+  people.forEach(p=>{
+    const b = balances[p.id];
+    // Saldo mensile: owed - paid - anticipati - rata
+    const net = b.owed - b.paid - b.anticipati - b.rata;
+    let cls = 'zero';
+    let text = 'In pari';
+    if(net > 0.01){ cls = 'debit'; text = 'Deve versare: ' + fmtEUR(net); }
+    else if(net < -0.01){ cls = 'credit'; text = 'A credito: ' + fmtEUR(-net); }
+
+    rowsHtml += `<div class="settle-row ${cls}">
+      <div>
+        <div class="who">${p.name}</div>
+        <div class="detail">Spese dovute: ${fmtEUR(b.owed)} · Pagato: ${fmtEUR(b.paid)} · Anticipati: ${fmtEUR(b.anticipati)} · Rata: ${fmtEUR(b.rata)}</div>
+      </div>
+      <div class="amount">${text}</div>
+    </div>`;
+  });
+
+  document.getElementById('settle-rows').innerHTML = rowsHtml;
+
+  // Categorie spese mese
+  let catMap = {};
+  monthMovs.filter(m=>m.type==='expense').forEach(m=>{
+    catMap[m.category] = (catMap[m.category] || 0) + m.amount;
+  });
+  let catHtml = Object.keys(catMap).length === 0 ? '<div class="empty">Nessuna spesa in questo mese.</div>' :
+    `<div class="table-scroll"><table><thead><tr><th>Categoria</th><th class="num">Totale</th></tr></thead><tbody>` +
+    Object.keys(catMap).map(c=>`<tr><td><b>${c}</b></td><td class="num">${fmtEUR(catMap[c])}</td></tr>`).join('') +
+    `</tbody></table></div>`;
+  document.getElementById('settle-by-cat').innerHTML = catHtml;
+}
+
+function renderOverall(){
+  let totalExp = 0, totalInc = 0;
+  movements.forEach(m=>{
+    if(m.type==='expense') totalExp += m.amount;
+    if(m.type==='income') totalInc += m.amount;
+  });
+
+  document.getElementById('overall-stats').innerHTML = `
+    <div class="stat"><div class="label">Spese totali</div><div class="value">${fmtEUR(totalExp)}</div></div>
+    <div class="stat"><div class="label">Entrate totali</div><div class="value">${fmtEUR(totalInc)}</div></div>
+  `;
+
+  // Calcolo saldo cumulativo complessivo
+  let balances = {};
+  people.forEach(p=> balances[p.id] = {paid:0, owed:0, anticipati:0, rata:0, conguaglio:0, pregresso: settings.pregressi[p.id] || 0});
+
+  movements.forEach(m=>{
+    if(m.type==='expense'){
+      let payerPerson = null;
+      if(m.paidby && m.paidby !== 'famiglia' && m.paidby !== 'contanti_casa'){
+        payerPerson = m.paidby.replace('_cash','');
+      }
+      if(payerPerson && balances[payerPerson]) balances[payerPerson].paid += m.amount;
+
+      const split = m.split || {p1:36, p2:36, p3:28, p4:0};
+      people.forEach(p=>{
+        const pct = split[p.id] || 0;
+        const share = m.amount * (pct / 100);
+        if(balances[p.id]) balances[p.id].owed += share;
+      });
+    } else if(m.type==='income'){
+      if(m.person && balances[m.person]){
+        if(m.category==='Anticipati') balances[m.person].anticipati += m.amount;
+        if(m.category==='Rata mensile') balances[m.person].rata += m.amount;
+        if(m.category==='Conguaglio') balances[m.person].conguaglio += m.amount;
+      }
+    }
+  });
+
+  let overallHtml = '';
+  people.forEach(p=>{
+    const b = balances[p.id];
+    const net = b.owed - b.paid - b.anticipati - b.rata - b.conguaglio + b.pregresso;
+    let cls = 'zero';
+    let text = 'In pari';
+    if(net > 0.01){ cls = 'debit'; text = 'Saldo dare: ' + fmtEUR(net); }
+    else if(net < -0.01){ cls = 'credit'; text = 'Saldo avere: ' + fmtEUR(-net); }
+
+    overallHtml += `<div class="settle-row ${cls}">
+      <div>
+        <div class="who">${p.name}</div>
+        <div class="detail">Pregresso: ${fmtEUR(b.pregresso)} · Dovuto: ${fmtEUR(b.owed)} · Pagato: ${fmtEUR(b.paid)} · Anticipati: ${fmtEUR(b.anticipati)} · Rata: ${fmtEUR(b.rata)} · Conguagli: ${fmtEUR(b.conguaglio)}</div>
+      </div>
+      <div class="amount">${text}</div>
+    </div>`;
+  });
+  document.getElementById('overall-rows').innerHTML = overallHtml;
+
+  // Pregresso rows
+  let pregHtml = Object.keys(settings.pregressi).length === 0 ? '<div class="empty">Nessun valore pregresso inserito.</div>' :
+    Object.keys(settings.pregressi.map || {}).length === 0 ? '' : '';
+  // Semplificato per pregresso
+  let pList = people.map(p=> {
+    const val = settings.pregressi[p.id] || 0;
+    if(val === 0) return '';
+    return `<div class="pregresso-card">
+      <span class="who">${p.name}</span>: <b>${fmtEUR(val)}</b>
+      <button class="btn small danger" style="float:right" onclick="removePregresso('${p.id}')">Elimina</button>
+    </div>`;
+  }).join('');
+  document.getElementById('pregresso-rows').innerHTML = pList || '<div class="empty">Nessun debito/credito pregresso configurato.</div>';
+}
+
+function removePregresso(pId){
+  delete settings.pregressi[pId];
+  saveSettings();
+  renderOverall();
+}
+
+function renderAccounts(){
+  document.getElementById('acc-cc-initial-input').value = settings.initialFamigliaCC;
+  document.getElementById('acc-cash-initial-input').value = settings.initialContantiCasa;
+  document.getElementById('acc-cc-body').innerHTML = '<div class="empty">Conto corrente aggiornato.</div>';
+  document.getElementById('acc-cash-body').innerHTML = '<div class="empty">Contanti aggiornati.</div>';
+}
+
+function renderSettingsPeople(){
+  const editor = document.getElementById('people-editor');
+  editor.innerHTML = people.map(p=>`
+    <div class="p-row">
+      <input type="text" id="set-name-${p.id}" value="${p.name}">
+      <input type="number" id="set-quota-${p.id}" value="${p.quota}" step="0.1" min="0" max="100">
+      <span>%</span>
+    </div>
+  `).join('');
+}
+
+// Navigazione mesi
+document.getElementById('list-prev').addEventListener('click', ()=>{ listMonth.setMonth(listMonth.getMonth()-1); renderList(); });
+document.getElementById('list-next').addEventListener('click', ()=>{ listMonth.setMonth(listMonth.getMonth()+1); renderList(); });
+document.getElementById('settle-prev').addEventListener('click', ()=>{ settleMonth.setMonth(settleMonth.getMonth()-1); renderSettle(); });
+document.getElementById('settle-next').addEventListener('click', ()=>{ settleMonth.setMonth(settleMonth.getMonth()+1); renderSettle(); });
+
+document.getElementById('btn-save-cc-initial').addEventListener('click', ()=>{
+  settings.initialFamigliaCC = parseFloat(document.getElementById('acc-cc-initial-input').value) || 0;
+  saveSettings();
+  showToast('Saldo iniziale salvato');
+});
+document.getElementById('btn-save-cash-initial').addEventListener('click', ()=>{
+  settings.initialContantiCasa = parseFloat(document.getElementById('acc-cash-initial-input').value) || 0;
+  saveSettings();
+  showToast('Saldo iniziale salvato');
+});
+document.getElementById('btn-save-people').addEventListener('click', ()=>{
+  people.forEach(p=>{
+    const nEl = document.getElementById('set-name-'+p.id);
+    const qEl = document.getElementById('set-quota-'+p.id);
+    if(nEl) p.name = nEl.value.trim();
+    if(qEl) p.quota = parseFloat(qEl.value)||0;
+  });
+  saveSettings();
+  showToast('Impostazioni persone salvate');
+});
+document.getElementById('btn-reset').addEventListener('click', async ()=>{
+  if(confirm('Vuoi davvero cancellare TUTTI i movimenti?')){
+    movements = [];
+    await saveMovements();
+    showToast('Tutti i movimenti sono stati cancellati');
+    renderList();
+  }
+});
 
 // Avvio applicazione
 window.addEventListener('DOMContentLoaded', async ()=>{
