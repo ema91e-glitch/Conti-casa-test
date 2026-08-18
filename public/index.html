@@ -520,7 +520,7 @@ async function loadAll(){
     const resSettings = await fetch('/.netlify/functions/api?key=settings');
     const rSettings = await resSettings.json();
     if(rSettings && rSettings.value){
-      const parsed = JSON.parse(rSettings.value);
+      const parsed = typeof rSettings.value === 'string' ? JSON.parse(rSettings.value) : rSettings.value;
       if(parsed.people) people = parsed.people;
       if(parsed.initialFamigliaCC !== undefined) settings.initialFamigliaCC = parsed.initialFamigliaCC;
       if(parsed.initialContantiCasa !== undefined) settings.initialContantiCasa = parsed.initialContantiCasa;
@@ -532,8 +532,8 @@ async function loadAll(){
     const resExpenses = await fetch('/.netlify/functions/api?key=expenses');
     const rExpenses = await resExpenses.json();
     if(rExpenses && rExpenses.value){
-      const parsed = JSON.parse(rExpenses.value);
-      movements = parsed.map(m => ({...m, type: m.type || 'expense'}));
+      const parsed = typeof rExpenses.value === 'string' ? JSON.parse(rExpenses.value) : rExpenses.value;
+      movements = Array.isArray(parsed) ? parsed.map(m => ({...m, type: m.type || 'expense'})) : [];
     }
   }catch(e){ movements = []; }
 }
@@ -544,7 +544,7 @@ async function saveSettings(){
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        value: { people, initialFamigliaCC: settings.initialFamigliaCC, initialContantiCasa: settings.initialContantiCasa, pregressi: settings.pregressi }
+        value: JSON.stringify({ people, initialFamigliaCC: settings.initialFamigliaCC, initialContantiCasa: settings.initialContantiCasa, pregressi: settings.pregressi })
       })
     });
   }catch(e){ showToast('Errore nel salvataggio impostazioni'); }
@@ -555,7 +555,7 @@ async function saveMovements(){
     await fetch('/.netlify/functions/api?key=expenses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: movements })
+      body: JSON.stringify({ value: JSON.stringify(movements) })
     });
   }catch(e){ showToast('Errore nel salvataggio dati'); }
 }
@@ -836,7 +836,7 @@ async function saveMovement(){
   await saveMovements();
   showToast('Movimento salvato!');
   initAddForm();
-  activateTab('list');
+  // RIMOSSO IL CAMBIO TAB: Ora rimane nella schermata di inserimento come in originale
 }
 
 function cancelEdit(){
@@ -846,7 +846,6 @@ function cancelEdit(){
   initAddForm();
 }
 
-// Render functions for list, settle, overall, accounts, settings
 function renderList(){
   const label = document.getElementById('list-month-label');
   label.textContent = monthLabel(listMonth);
@@ -968,13 +967,11 @@ function renderSettle(){
     <div class="stat"><div class="label">Entrate mese</div><div class="value">${fmtEUR(totalIncome)}</div></div>
   `;
 
-  // Calcolo base mensile per persona
   let balances = {};
   people.forEach(p=> balances[p.id] = {paid:0, owed:0, anticipati:0, rata:0, conguaglio:0});
 
   monthMovs.forEach(m=>{
     if(m.type==='expense'){
-      // Chi ha pagato
       let payerPerson = null;
       if(m.paidby==='famiglia' || m.paidby==='contanti_casa') payerPerson = null;
       else if(m.paidby==='esterno') payerPerson = 'p4';
@@ -985,7 +982,6 @@ function renderSettle(){
         balances[payerPerson].paid += m.amount;
       }
 
-      // Quota dovuta
       const split = m.split || {p1:36, p2:36, p3:28, p4:0};
       people.forEach(p=>{
         const pct = split[p.id] || 0;
@@ -1004,7 +1000,6 @@ function renderSettle(){
   let rowsHtml = '';
   people.forEach(p=>{
     const b = balances[p.id];
-    // Saldo mensile: owed - paid - anticipati - rata
     const net = b.owed - b.paid - b.anticipati - b.rata;
     let cls = 'zero';
     let text = 'In pari';
@@ -1022,7 +1017,6 @@ function renderSettle(){
 
   document.getElementById('settle-rows').innerHTML = rowsHtml;
 
-  // Categorie spese mese
   let catMap = {};
   monthMovs.filter(m=>m.type==='expense').forEach(m=>{
     catMap[m.category] = (catMap[m.category] || 0) + m.amount;
@@ -1046,7 +1040,6 @@ function renderOverall(){
     <div class="stat"><div class="label">Entrate totali</div><div class="value">${fmtEUR(totalInc)}</div></div>
   `;
 
-  // Calcolo saldo cumulativo complessivo
   let balances = {};
   people.forEach(p=> balances[p.id] = {paid:0, owed:0, anticipati:0, rata:0, conguaglio:0, pregresso: settings.pregressi[p.id] || 0});
 
@@ -1092,10 +1085,6 @@ function renderOverall(){
   });
   document.getElementById('overall-rows').innerHTML = overallHtml;
 
-  // Pregresso rows
-  let pregHtml = Object.keys(settings.pregressi).length === 0 ? '<div class="empty">Nessun valore pregresso inserito.</div>' :
-    Object.keys(settings.pregressi.map || {}).length === 0 ? '' : '';
-  // Semplificato per pregresso
   let pList = people.map(p=> {
     const val = settings.pregressi[p.id] || 0;
     if(val === 0) return '';
@@ -1131,7 +1120,6 @@ function renderSettingsPeople(){
   `).join('');
 }
 
-// Navigazione mesi
 document.getElementById('list-prev').addEventListener('click', ()=>{ listMonth.setMonth(listMonth.getMonth()-1); renderList(); });
 document.getElementById('list-next').addEventListener('click', ()=>{ listMonth.setMonth(listMonth.getMonth()+1); renderList(); });
 document.getElementById('settle-prev').addEventListener('click', ()=>{ settleMonth.setMonth(settleMonth.getMonth()-1); renderSettle(); });
@@ -1166,7 +1154,6 @@ document.getElementById('btn-reset').addEventListener('click', async ()=>{
   }
 });
 
-// Avvio applicazione
 window.addEventListener('DOMContentLoaded', async ()=>{
   attachAddFormListenersOnce();
   await loadAll();
