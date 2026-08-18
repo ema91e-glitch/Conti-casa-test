@@ -1,43 +1,41 @@
 import { getStore } from "@netlify/blobs";
 
-export async function handler(event, context) {
-  // Inizializza lo store usando il contesto di Netlify
-  const store = getStore({
-    name: "conti-di-casa-data",
-    siteID: context?.clientContext?.custom?.netlify?.site_id || process.env.SITE_ID,
-    token: context?.clientContext?.custom?.netlify?.token || process.env.NETLIFY_BLOBS_CONTEXT,
-    ...context?.blobs
-  });
+export default async (req, context) => {
+  // Con il formato moderno (export default), context.blobs gestisce l'autenticazione automaticamente
+  const store = getStore({ name: "conti-di-casa-data", ...context.blobs });
 
-  const method = event.httpMethod;
-  const key = event.queryStringParameters && event.queryStringParameters.key;
+  const url = new URL(req.url);
+  const key = url.searchParams.get("key");
+
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Content-Type": "application/json"
+  };
+
+  if (req.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers });
+  }
 
   if (!key) {
-    return {
-      statusCode: 400,
-      body: JSON.stringify({ error: "Missing key" })
-    };
+    return new Response(JSON.stringify({ error: "Missing key" }), { status: 400, headers });
   }
 
   try {
-    if (method === "GET") {
+    if (req.method === "GET") {
       const data = await store.get(key);
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value: data ? JSON.parse(data) : null })
-      };
-    } else if (method === "POST") {
-      const body = JSON.parse(event.body);
-      await store.set(key, JSON.stringify(body.value));
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ success: true })
-      };
+      return new Response(JSON.stringify({ value: data ? JSON.parse(data) : null }), { status: 200, headers });
     }
-    return { statusCode: 405, body: "Method Not Allowed" };
+
+    if (req.method === "POST") {
+      const body = await req.json();
+      await store.set(key, JSON.stringify(body.value));
+      return new Response(JSON.stringify({ success: true }), { status: 200, headers });
+    }
+
+    return new Response("Method Not Allowed", { status: 405, headers });
   } catch (err) {
-    return { statusCode: 500, body: err.toString() };
+    return new Response(JSON.stringify({ error: err.toString() }), { status: 500, headers });
   }
-}
+};
