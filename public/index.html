@@ -514,17 +514,25 @@ function showToast(msg){
   setTimeout(()=>t.classList.remove('show'), 1800);
 }
 
-// ---------- STORAGE CON NETLIFY FUNCTIONS ----------
+// ---------- STORAGE CON NETLIFY FUNCTIONS (PARSING SICURO) ----------
 async function loadAll(){
   try{
     const resSettings = await fetch('/.netlify/functions/api?key=settings');
     const rSettings = await resSettings.json();
     if(rSettings && rSettings.value){
-      const parsed = JSON.parse(rSettings.value);
-      if(parsed.people) people = parsed.people;
-      if(parsed.initialFamigliaCC !== undefined) settings.initialFamigliaCC = parsed.initialFamigliaCC;
-      if(parsed.initialContantiCasa !== undefined) settings.initialContantiCasa = parsed.initialContantiCasa;
-      if(parsed.pregressi) settings.pregressi = parsed.pregressi;
+      let parsed = rSettings.value;
+      if(typeof parsed === 'string') {
+        try { parsed = JSON.parse(parsed); } catch(e){}
+      }
+      if(parsed && typeof parsed === 'string') {
+        try { parsed = JSON.parse(parsed); } catch(e){}
+      }
+      if(parsed){
+        if(parsed.people) people = parsed.people;
+        if(parsed.initialFamigliaCC !== undefined) settings.initialFamigliaCC = parsed.initialFamigliaCC;
+        if(parsed.initialContantiCasa !== undefined) settings.initialContantiCasa = parsed.initialContantiCasa;
+        if(parsed.pregressi) settings.pregressi = parsed.pregressi;
+      }
     }
   }catch(e){ /* usa i valori predefiniti */ }
 
@@ -532,31 +540,39 @@ async function loadAll(){
     const resExpenses = await fetch('/.netlify/functions/api?key=expenses');
     const rExpenses = await resExpenses.json();
     if(rExpenses && rExpenses.value){
-      const parsed = JSON.parse(rExpenses.value);
-      movements = parsed.map(m => ({...m, type: m.type || 'expense'}));
+      let parsed = rExpenses.value;
+      if(typeof parsed === 'string') {
+        try { parsed = JSON.parse(parsed); } catch(e){}
+      }
+      if(parsed && typeof parsed === 'string') {
+        try { parsed = JSON.parse(parsed); } catch(e){}
+      }
+      movements = Array.isArray(parsed) ? parsed.map(m => ({...m, type: m.type || 'expense'})) : [];
     }
   }catch(e){ movements = []; }
 }
 
 async function saveSettings(){
   try{
-    await fetch('/.netlify/functions/api?key=settings', {
+    const res = await fetch('/.netlify/functions/api?key=settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        value: { people, initialFamigliaCC: settings.initialFamigliaCC, initialContantiCasa: settings.initialContantiCasa, pregressi: settings.pregressi }
+        value: JSON.stringify({ people, initialFamigliaCC: settings.initialFamigliaCC, initialContantiCasa: settings.initialContantiCasa, pregressi: settings.pregressi })
       })
     });
+    if(!res.ok) throw new Error('HTTP '+res.status);
   }catch(e){ showToast('Errore nel salvataggio impostazioni'); }
 }
 
 async function saveMovements(){
   try{
-    await fetch('/.netlify/functions/api?key=expenses', {
+    const res = await fetch('/.netlify/functions/api?key=expenses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: movements })
+      body: JSON.stringify({ value: JSON.stringify(movements) })
     });
+    if(!res.ok) throw new Error('HTTP '+res.status);
   }catch(e){ showToast('Errore nel salvataggio dati'); }
 }
 
@@ -895,16 +911,11 @@ function itemsForMonth(d){
   const key = monthKey(d);
   return movements.filter(m => m.date && m.date.slice(0,7) === key);
 }
-// Tutti i movimenti dall'inizio fino alla FINE del mese indicato (incluso).
-// Serve per calcolare il saldo debito/credito "a saldo progressivo", cosicché un conguaglio
-// versato in un mese possa correttamente estinguere un debito maturato in un mese precedente,
-// invece di risultare erroneamente un credito "spuntato dal nulla" in quel solo mese isolato.
 function itemsUpToMonth(d){
   const key = monthKey(d);
   return movements.filter(m => m.date && m.date.slice(0,7) <= key);
 }
 
-// Core expense aggregation: quotas owed, personal payments, category totals.
 function computeAggregate(expenseItems){
   const total = expenseItems.reduce((s,e)=>s+e.amount,0);
   const owed = {p1:0,p2:0,p3:0,p4:0};
@@ -934,26 +945,6 @@ function computeAggregate(expenseItems){
   return {total, owed, paidPersonal, paidFamiglia, paidContantiCasa, byCategory, count: expenseItems.length};
 }
 
-// Full settlement: quota, pagato, debito teorico, conguagli versati, saldo finale.
-// SALDO FINALE = POSIZIONE PREGRESSA + QUOTA - PAGAMENTI PERSONALI - (CONGUAGLI VERSATI + ALTRE ENTRATE PERSONALI)
-// pregressi (optional): {personId: signedAmount} where positive = debito pregresso, negative = credito pregresso.
-// La posizione pregressa NON tocca i conti: entra solo nel saldo individuale finale.
-// Distinzione: "conguaglio" (categoria Conguaglio) e "altra entrata versata in casa" (altre categorie con persona
-// indicata) sono fenomeni diversi e vengono mostrati separatamente, ma ENTRAMBI riducono il debito della persona
-// e generano credito solo per l'eventuale parte eccedente il debito complessivo (mai l'intero importo versato).
-// Full settlement: quota, pagato, debito teorico, versamenti, saldo finale.
-// SALDO FINALE = POSIZIONE PREGRESSA + QUOTA - PAGAMENTI PERSONALI - VERSAMENTI CONTEGGIATI
-// pregressi (optional): {personId: signedAmount} where positive = debito pregresso, negative = credito pregresso.
-// La posizione pregressa NON tocca i conti: entra solo nel saldo individuale finale.
-//
-// Quattro categorie di entrata, con effetto diverso sulla posizione individuale:
-// - "Anticipati": soldi versati perché il Conto Famiglia non aveva abbastanza disponibilità.
-//   Riduce sempre il saldo individuale (Mensile e Situazione). (ex "Avanzati")
-// - "Conguaglio": salda un debito accumulato. Il movimento è sempre visibile (elenco/conto), ma riduce il
-//   saldo individuale SOLO quando includeConguaglio=true (pagina Situazione). Non incide sul riepilogo Mensile.
-// - "Altro": guadagno puro della casa. Non incide MAI sulla posizione individuale di nessuno, è solo un'entrata di conto.
-// - "Rata mensile": contributo fisso mensile della persona alle spese di casa. Riduce sempre il saldo
-//   individuale (Mensile e Situazione), come gli "Anticipati", ma è tracciata separatamente.
 function computeSettlementFull(items, pregressi, includeConguaglio){
   const expenseItems = items.filter(i=>i.type==='expense');
   const incomeItems = items.filter(i=>i.type==='income');
@@ -968,7 +959,7 @@ function computeSettlementFull(items, pregressi, includeConguaglio){
     if(inc.category==='Conguaglio') conguagliVersati[inc.person] += inc.amount;
     else if(inc.category==='Anticipati') anticipatiVersati[inc.person] += inc.amount;
     else if(inc.category==='Rata mensile') rataMensileVersata[inc.person] += inc.amount;
-    else altroEntrate[inc.person] += inc.amount; // 'Altro': tracciato solo per info, mai conteggiato
+    else altroEntrate[inc.person] += inc.amount;
   });
 
   const pregressoMap = pregressi || {};
@@ -1102,7 +1093,6 @@ function monthLabelFromKey(key){
   return new Date(y, m-1, 1).toLocaleDateString('it-IT',{month:'long', year:'numeric'});
 }
 
-// Groups an account's chronological rows into per-month summaries (saldo iniziale/finale progressivo coerente).
 function computeAccountMonthly(acc){
   const byMonth = {};
   const order = [];
@@ -1244,7 +1234,6 @@ function renderList(){
   attachEditButtons();
 }
 
-// Riusabile ovunque compaia una spesa/entrata: collega ogni pulsante "Modifica" a editMovement().
 function attachEditButtons(){
   document.querySelectorAll('[data-edit]').forEach(btn=>{
     btn.onclick = ()=> editMovement(btn.dataset.edit);
@@ -1269,19 +1258,13 @@ document.getElementById('list-category-filter').addEventListener('change', (e)=>
   renderList();
 });
 
-// ---------- SETTLEMENT TAB (monthly, saldo a scalare/progressivo) ----------
+// ---------- SETTLEMENT TAB ----------
 function renderSettle(){
   document.getElementById('settle-month-label').textContent = monthLabel(settleMonth);
 
-  // Statistiche di cassa: SOLO i movimenti del mese selezionato (spesa reale del mese).
   const items = itemsForMonth(settleMonth);
   const aggMonth = computeAggregate(items.filter(i=>i.type==='expense'));
 
-  // Debito/credito per persona: SOLO sui movimenti del mese selezionato (nessun riporto da un mese
-  // all'altro). Il "Conguaglio" (saldo di un debito pregresso/accumulato) NON viene conteggiato qui:
-  // incide solo sulla pagina Situazione. "Anticipati" e "Rata mensile" riducono il debito del mese.
-  // La posizione pregressa e il saldo cumulativo NON vengono mostrati/conteggiati nel Mensile:
-  // tutta la situazione cumulativa vive SOLO nella pagina Situazione.
   const r = computeSettlementFull(items, {}, false);
   const expenseItems = items.filter(i=>i.type==='expense');
   const incomeItems = items.filter(i=>i.type==='income');
@@ -1440,8 +1423,6 @@ function renderPregressoForm(){
 function renderPregressoSection(){
   renderPregressoForm();
   const wrap = document.getElementById('pregresso-rows');
-  // Solo l'elenco delle posizioni pregresse impostate (aggiunta/modifica/eliminazione).
-  // Il riepilogo debitorio completo (saldo finale, conguagli, ecc.) sta SOLO nella pagina Situazione.
   wrap.innerHTML = people.map(p=>{
     const entry = settings.pregressi && settings.pregressi[p.id];
     const pregLine = entry && Math.abs(entry.amount)>=0.005
@@ -1469,7 +1450,7 @@ function renderPregressoSection(){
   });
 }
 
-// ---------- SITUAZIONE COMPLESSIVA (cumulative) ----------
+// ---------- SITUAZIONE COMPLESSIVA ----------
 function renderOverall(){
   const items = movements.slice();
   const r = computeSettlementFull(items, pregressiSignedMap(), true);
@@ -1651,7 +1632,6 @@ function exportData(){
   const payerMap = Object.fromEntries(payerAccountOptions().map(a=>[a.id,a.label]));
   const destMap = Object.fromEntries(incomeDestAccounts().map(a=>[a.id,a.label]));
 
-  // 1) Movimenti
   const movRows = [['Data','Tipo','Categoria','Descrizione','Importo','Persona che ha pagato/Conto usato','Conto interessato','Persona (versato da)','Suddivisione']];
   movements.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(m=>{
     if(m.type==='expense'){
@@ -1665,7 +1645,6 @@ function exportData(){
     }
   });
 
-  // 2) Situazione persone (cumulativa, con posizione pregressa; conguagli conteggiati SOLO qui, come in "Situazione")
   const r = computeSettlementFull(movements, pregressiSignedMap(), true);
   const perRows = [['Persona','Debito/Credito pregresso','Quota di competenza','Totale pagato personalmente','Debito teorico','Totale conguagli versati (saldano il debito)','Totale anticipati versati','Totale rata mensile versata','Totale "Altro" (non conteggiato)','Saldo finale','Stato']];
   people.forEach(p=>{
@@ -1674,7 +1653,6 @@ function exportData(){
     perRows.push([p.name, (r.pregressi[p.id]||0).toFixed(2), r.owed[p.id].toFixed(2), r.paidPersonal[p.id].toFixed(2), r.debitoTeorico[p.id].toFixed(2), (r.conguagliVersati[p.id]||0).toFixed(2), (r.anticipatiVersati[p.id]||0).toFixed(2), (r.rataMensileVersata[p.id]||0).toFixed(2), (r.altroEntrate[p.id]||0).toFixed(2), n.toFixed(2), stato]);
   });
 
-  // 3+4) Conti
   function accountCSV(acc){
     const rows = [['Saldo iniziale',acc.initial.toFixed(2)],['Entrate',acc.entrate.toFixed(2)],['Uscite',acc.uscite.toFixed(2)],['Saldo attuale',acc.saldo.toFixed(2)],[],['Data','Tipo','Categoria','Descrizione','Importo','Saldo progressivo']];
     acc.rows.forEach(m=>rows.push([m.date, m.type==='income'?'Entrata':'Spesa', m.category, m.desc||'', m.amount.toFixed(2), m.saldoProgressivo.toFixed(2)]));
