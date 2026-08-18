@@ -519,57 +519,44 @@ async function loadAll(){
   try{
     const resSettings = await fetch('/.netlify/functions/api?key=settings');
     const rSettings = await resSettings.json();
-    if(rSettings && rSettings.value !== undefined && rSettings.value !== null){
-      const raw = rSettings.value;
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if(parsed && typeof parsed === 'object'){
-        if(parsed.people) people = parsed.people;
-        if(parsed.initialFamigliaCC !== undefined) settings.initialFamigliaCC = parsed.initialFamigliaCC;
-        if(parsed.initialContantiCasa !== undefined) settings.initialContantiCasa = parsed.initialContantiCasa;
-        if(parsed.pregressi) settings.pregressi = parsed.pregressi;
-      }
+    if(rSettings && rSettings.value){
+      const parsed = JSON.parse(rSettings.value);
+      if(parsed.people) people = parsed.people;
+      if(parsed.initialFamigliaCC !== undefined) settings.initialFamigliaCC = parsed.initialFamigliaCC;
+      if(parsed.initialContantiCasa !== undefined) settings.initialContantiCasa = parsed.initialContantiCasa;
+      if(parsed.pregressi) settings.pregressi = parsed.pregressi;
     }
   }catch(e){ /* usa i valori predefiniti */ }
 
   try{
     const resExpenses = await fetch('/.netlify/functions/api?key=expenses');
     const rExpenses = await resExpenses.json();
-    if(rExpenses && rExpenses.value !== undefined && rExpenses.value !== null){
-      const raw = rExpenses.value;
-      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if(Array.isArray(parsed)){
-        movements = parsed.map(m => ({...m, type: m.type || 'expense'}));
-      }
+    if(rExpenses && rExpenses.value){
+      const parsed = JSON.parse(rExpenses.value);
+      movements = parsed.map(m => ({...m, type: m.type || 'expense'}));
     }
-  }catch(e){ /* mantieni i movimenti già presenti, non svuotare l'array */ }
+  }catch(e){ movements = []; }
 }
 
 async function saveSettings(){
   try{
-    const res = await fetch('/.netlify/functions/api?key=settings', {
+    await fetch('/.netlify/functions/api?key=settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        value: JSON.stringify({
-          people,
-          initialFamigliaCC: settings.initialFamigliaCC,
-          initialContantiCasa: settings.initialContantiCasa,
-          pregressi: settings.pregressi
-        })
+        value: { people, initialFamigliaCC: settings.initialFamigliaCC, initialContantiCasa: settings.initialContantiCasa, pregressi: settings.pregressi }
       })
     });
-    if(!res.ok) throw new Error('HTTP '+res.status);
   }catch(e){ showToast('Errore nel salvataggio impostazioni'); }
 }
 
 async function saveMovements(){
   try{
-    const res = await fetch('/.netlify/functions/api?key=expenses', {
+    await fetch('/.netlify/functions/api?key=expenses', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ value: JSON.stringify(movements) })
+      body: JSON.stringify({ value: movements })
     });
-    if(!res.ok) throw new Error('HTTP '+res.status);
   }catch(e){ showToast('Errore nel salvataggio dati'); }
 }
 
