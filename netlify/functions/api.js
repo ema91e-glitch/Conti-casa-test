@@ -1,9 +1,10 @@
 import { getStore } from "@netlify/blobs";
 
 export async function handler(event, context) {
-  const store = getStore("conti-di-casa-data");
+  // Inizializza lo store usando il contesto della Function
+  const store = getStore({ name: "conti-di-casa-data", ...context?.blobs });
   const method = event.httpMethod;
-  const key = event.queryStringParameters && event.queryStringParameters.key; // 'expenses' o 'settings'
+  const key = event.queryStringParameters && event.queryStringParameters.key;
 
   if (!key) {
     return { statusCode: 400, body: JSON.stringify({ error: "Missing key" }) };
@@ -15,7 +16,7 @@ export async function handler(event, context) {
       return {
         statusCode: 200,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ value: data || null }),
+        body: JSON.stringify({ value: data ? JSON.parse(data) : null }),
       };
     } else if (method === "POST") {
       const body = JSON.parse(event.body);
